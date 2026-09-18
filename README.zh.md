@@ -13,6 +13,18 @@
 | torch / sglang | 2.13.0+cu130 / pennyroyal 树 `0.0.0.dev1+g2c675da09`（editable 形态，ff 跟随 tag pennyroyal-v2.5.1） |
 | 端点 | http://10.10.4.12:8000，served-model-name `Qwen3.8-Flash-Next-NVFP4` |
 
+## 实测性能（CT110 在线实测，并发=1，streaming，temperature=0）
+
+| 指标 | 数值 | 条件 |
+|------|------|------|
+| TTFT 短请求 | ~290–400 ms | radix 热命中后稳定在下沿 |
+| TTFT @ 30k token prompt | ~0.6 s | prefill 吞吐 ≈50k tok/s（chunked-prefill 4096） |
+| decode 热态突发（400 tok） | ~1.4 s → ≈280–290 tok/s | NEXTN 投机解码（steps 2 / topk 1 / draft 4），每 step 多 token 接受拉高速率 |
+| decode 长输出稳态 | ~96–110 tok/s | 长思考链上接受长度随初始突发后衰减 |
+| 质量门 | 通过 | 188K token 双锚点 NIAH + ×3 no-repeat 检查 |
+
+复测方式：任意 streaming 客户端打 `POST /v1/chat/completions`，加 `stream_options.include_usage` 拿精确 token 数。注意：按 SSE chunk 数统计会低估真实 tok/s——以 `usage.completion_tokens` 为准，不是 chunk 计数。
+
 Qwen3.8-Flash-Next 在生产环境的 sglang 调优档案：pennyroyal-v2.5.1 源码树 + 单卡 RTX PRO 6000（SM120 / Blackwell），部署于 CT110 @ 10.10.4.12:8000。
 
 技术栈：`dealignai Qwen3.8-Flash-Next-ABLITERATED-NVFP4` 权重 + FP8 KV + HiCache + Online MXFP8 投影 + 专家冷池 → 真 1M 单窗口上下文，热态 decode 约 99 tok/s。

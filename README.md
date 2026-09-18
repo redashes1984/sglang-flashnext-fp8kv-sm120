@@ -13,6 +13,18 @@
 | torch / sglang | 2.13.0+cu130 / pennyroyal tree `0.0.0.dev1+g2c675da09` (editable, ff-tracked to tag pennyroyal-v2.5.1) |
 | Endpoint | http://10.10.4.12:8000, served-model-name `Qwen3.8-Flash-Next-NVFP4` |
 
+## Measured performance (CT110 live, c=1 streaming, temperature=0, greedy)
+
+| Metric | Value | Condition |
+|--------|-------|-----------|
+| TTFT short request | ~290–400 ms | warm radix; stabilizes at low end once cache hot |
+| TTFT @ 30k-token prompt | ~0.6 s | ≈50k tok/s prefill throughput (chunked-prefill 4096) |
+| Decode hot burst (400 tok) | ~1.4 s → ≈280–290 tok/s | NEXTN spec-dec (steps 2 / topk 1 / draft 4); per-step acceptance lifts the rate |
+| Decode sustained (long outputs) | ~96–110 tok/s | accept length decays after initial burst on long chains |
+| Quality gate | pass | 188K-token dual-needle NIAH + ×3 no-repeat sanity |
+
+Reproduce with any streaming client against `POST /v1/chat/completions` (`stream_options.include_usage` for exact token counts). Chunk-counting underflows true tok/s — use `usage.completion_tokens`, not SSE chunk count.
+
 Production tuning overlay for **Qwen3.8-Flash-Next** served by sglang (pennyroyal-v2.5.1 tree) on a single RTX PRO 6000 (SM120, Blackwell), CT110 @ 10.10.4.12:8000.
 
 Stack: `dealignai Qwen3.8-Flash-Next-ABLITERATED-NVFP4` weights + FP8 KV + HiCache + MXFP8 online projections + expert cold pool → true 1M single-window context, ~99 tok/s hot decode.
