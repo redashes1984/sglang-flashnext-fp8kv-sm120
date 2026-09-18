@@ -1,5 +1,7 @@
 # sglang-flashnext-fp8kv-sm120（中文版）
 
+[English README →](README.md)
+
 Qwen3.8-Flash-Next 在生产环境的 sglang 调优档案：pennyroyal-v2.5.1 源码树 + 单卡 RTX PRO 6000（SM120 / Blackwell），部署于 CT110 @ 10.10.4.12:8000。
 
 技术栈：`dealignai Qwen3.8-Flash-Next-ABLITERATED-NVFP4` 权重 + FP8 KV + HiCache + Online MXFP8 投影 + 专家冷池 → 真 1M 单窗口上下文，热态 decode 约 99 tok/s。

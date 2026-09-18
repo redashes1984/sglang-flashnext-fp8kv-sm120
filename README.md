@@ -1,5 +1,7 @@
 # sglang-flashnext-fp8kv-sm120
 
+[中文版 README →](README.zh.md)
+
 Production tuning overlay for **Qwen3.8-Flash-Next** served by sglang (pennyroyal-v2.5.1 tree) on a single RTX PRO 6000 (SM120, Blackwell), CT110 @ 10.10.4.12:8000.
 
 Stack: `dealignai Qwen3.8-Flash-Next-ABLITERATED-NVFP4` weights + FP8 KV + HiCache + MXFP8 online projections + expert cold pool → true 1M single-window context, ~99 tok/s hot decode.
