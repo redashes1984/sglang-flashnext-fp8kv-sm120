@@ -2,6 +2,17 @@
 
 [中文版 README →](README.zh.md)
 
+## Hardware & environment
+
+| Item | Value |
+|------|-------|
+| Host | CT110 `sglang-qwen4exp` — LXC container on Proxmox VE, Debian 13 (trixie) |
+| GPU | NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 96 GB (SM120), single-GPU `CUDA_VISIBLE_DEVICES=0` |
+| Driver / CUDA | 610.57.04 / CUDA 13.0 (`TORCH_CUDA_ARCH_LIST=12.0`) |
+| CPU / RAM | 8 vCPU / 118 GB (PLE 47.7 GB pinned + HiCache host 13 GB live alongside) |
+| torch / sglang | 2.13.0+cu130 / pennyroyal tree `0.0.0.dev1+g2c675da09` (editable, ff-tracked to tag pennyroyal-v2.5.1) |
+| Endpoint | http://10.10.4.12:8000, served-model-name `Qwen3.8-Flash-Next-NVFP4` |
+
 Production tuning overlay for **Qwen3.8-Flash-Next** served by sglang (pennyroyal-v2.5.1 tree) on a single RTX PRO 6000 (SM120, Blackwell), CT110 @ 10.10.4.12:8000.
 
 Stack: `dealignai Qwen3.8-Flash-Next-ABLITERATED-NVFP4` weights + FP8 KV + HiCache + MXFP8 online projections + expert cold pool → true 1M single-window context, ~99 tok/s hot decode.

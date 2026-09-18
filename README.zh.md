@@ -2,6 +2,17 @@
 
 [English README →](README.md)
 
+## 硬件与环境
+
+| 项 | 值 |
+|------|-------|
+| 主机 | CT110 `sglang-qwen4exp` — PVE 上的 LXC 容器，Debian 13 (trixie) |
+| GPU | NVIDIA RTX PRO 6000 Blackwell Workstation Edition，96 GB（SM120），单卡 `CUDA_VISIBLE_DEVICES=0` |
+| Driver / CUDA | 610.57.04 / CUDA 13.0（`TORCH_CUDA_ARCH_LIST=12.0`） |
+| CPU / RAM | 8 vCPU / 118 GB（PLE 钉载 47.7 GB + HiCache host 13 GB 同机共存） |
+| torch / sglang | 2.13.0+cu130 / pennyroyal 树 `0.0.0.dev1+g2c675da09`（editable 形态，ff 跟随 tag pennyroyal-v2.5.1） |
+| 端点 | http://10.10.4.12:8000，served-model-name `Qwen3.8-Flash-Next-NVFP4` |
+
 Qwen3.8-Flash-Next 在生产环境的 sglang 调优档案：pennyroyal-v2.5.1 源码树 + 单卡 RTX PRO 6000（SM120 / Blackwell），部署于 CT110 @ 10.10.4.12:8000。
 
 技术栈：`dealignai Qwen3.8-Flash-Next-ABLITERATED-NVFP4` 权重 + FP8 KV + HiCache + Online MXFP8 投影 + 专家冷池 → 真 1M 单窗口上下文，热态 decode 约 99 tok/s。
