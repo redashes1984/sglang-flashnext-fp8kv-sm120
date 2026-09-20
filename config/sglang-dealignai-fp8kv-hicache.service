@@ -51,6 +51,8 @@ Environment=SGLANG_EXPERT_KEEP_MASK=/opt/sglang-config/expert_keep_330_final.jso
 Environment=SGLANG_EXPERT_KEEP_OFFLOAD=1
 Environment=SGLANG_EXPERT_COLD_POOL_SLOTS=64
 Environment=SGLANG_COLD_DEBUG=1
+Environment=SGLANG_COLD_NEED_HITS=1
+Environment=SGLANG_COLD_MAX_STAGE=8
 LimitNOFILE=65536
 LimitNPROC=4096
 Restart=no
