@@ -52,6 +52,11 @@ Environment=SGLANG_EXPERT_COLD_POOL_SLOTS=64
 Environment=SGLANG_COLD_DEBUG=1
 ```
 - Result: KV pool reaches full cap `#tokens: 1,572,864` (fp8_e4m3 K/V ~9 GB each); host pinned 24.15 GB, dynamic=True.
++ **v3 — prefill fast-path:** a stash with rows >= `SGLANG_COLD_PREFILL_MIN_ROWS` (default 512; <=0 disables) counts as prefill-sourced, so the hook stages on that tick immediately instead of waiting for the `%8` cadence, with cap `SGLANG_COLD_MAX_STAGE_PREFILL` (default 16). Prompt demand is real lookahead for the decode that follows it.
++ **v3 — prior warm-start (optional):** `SGLANG_COLD_PRIOR_JSON` points at an offline census file (per-layer ranked cold-gid lists); top entries are H2Ded into empty slots at shrink time, so the first request never starts from a cold pool. Idempotent; gids outside the pool are skipped.
++ **v4 — hit-time LRU:** `_refresh_hits` bumps `row_tick` for staged gids actually selected in the current stash; eviction becomes true least-recently-used instead of insertion-order FIFO. A hot-but-old row no longer gets evicted ahead of a stale one. Squatting is bounded: decayed demand drops out of the stash and the row ages on the next overflow.
++ **Live tuning:** `Environment=SGLANG_COLD_NEED_HITS=1` and `Environment=SGLANG_COLD_MAX_STAGE=8` in the unit — confirmation window halved, staging per tick doubled. Root cause fixed: low-frequency proper nouns at the tail of long generations were served by substitute keep experts because the correct cold expert arrived ~16 forwards late; v3+v4 shrinks the window to <=8 and pre-warms it.
++ Verified 2026-09-21 (CT110 restart 01:39): CPU suites T1-T11 + V1-V9 green, external audits 95 and 96 PASS (zero must-fix). Boot shows `checksum selfcheck: 33792 rows OK`; staged−evicted invariant = 3072 (=48×64) holds under the new cadence; tail-token probes ("Ampere / Ada Lovelace") spell correctly at max_new_tokens truncation boundary.
 - **k-alignment rule:** hook default `k` must equal model's `num_experts_per_tok` (=10 here); otherwise set `SGLANG_COLD_TOPK`. A mismatch silently misaligns `hot_min` row grouping — decode degrades with no error.
 - **Do not shrink keep/slots below this tier** for VRAM reasons: pure static keep-mask (keep-only, tiny slots) flattens router distribution → "hmm hmm" filler loops in long thinking chains. keep330+64 restores diversity.
 
