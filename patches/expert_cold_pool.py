@@ -101,6 +101,23 @@ def max_stage_per_tick():
     return _env_int("SGLANG_COLD_MAX_STAGE", 4)
 
 
+def max_stage_prefill():
+    """Stage cap per layer on a prefill-sourced tick (fast path)."""
+    return _env_int("SGLANG_COLD_MAX_STAGE_PREFILL", 16)
+
+
+def prefill_min_rows():
+    """Row-count at/above which a stash counts as prefill-sourced. <=0 disables
+    the fast path entirely (pure %8 cadence = pre-patch behaviour)."""
+    return _env_int("SGLANG_COLD_PREFILL_MIN_ROWS", 512)
+
+
+def prior_path():
+    """Optional offline census export: per-layer ranked cold-gid lists used to
+    warm-start the flowing slots at shrink time. Empty => disabled."""
+    return os.environ.get("SGLANG_COLD_PRIOR_JSON", "")
+
+
 def ema_decay():
     return _env_float("SGLANG_COLD_EMA_DECAY", 0.75)
 
@@ -119,10 +136,13 @@ def debug_on():
 
 _KEEP = None
 _KEEP_LOADED = False
+_PRIOR = None
+_PRIOR_LOADED = False
 _LEAK_DUMPED = [0]  # v2.5b forensic budget (storage-referrer dumps, first 2 misses)
 _BIAS_CACHE = {}    # (layer, dtype) -> persistent bias column (len = full-E = 512)
 _REMAP_CACHE = {}   # layer -> persistent remap table (len = full-E)
 _DIRTY = False
+_PREFILL_PENDING = False   # True while a prefill-sized stash awaits a fast-path hook pass
 _STASH = {}         # layer -> {"ids","scores"} ring buffers (consume-once)
 _CFG_LIDS = {}      # v2.9: id(topk_config) -> layer_id, ONLY for shrunk target modules
 _CFG_REFS = []      # keeps those TopKConfig objects alive so id() is never recycled
@@ -146,6 +166,19 @@ def _keep_mask():
             logger.info("[COLD-POOL] keep mask loaded: %d layers, keep/layer=%s",
                         len(_KEEP), next(iter((len(v) for v in _KEEP.values())), 0))
     return _KEEP
+
+
+def _prior_mask():
+    global _PRIOR, _PRIOR_LOADED
+    if not _PRIOR_LOADED:
+        _PRIOR_LOADED = True
+        p = prior_path()
+        if p:
+            with open(p) as fh:
+                raw = json.load(fh)
+            _PRIOR = {int(k): [int(i) for i in v] for k, v in raw.items()}
+            logger.info("[COLD-POOL] prior census loaded: %d layers", len(_PRIOR))
+    return _PRIOR
 
 
 def offload_active():
@@ -386,6 +419,9 @@ def stash_demand(layer_id, pre_mask_logits, topk_ids, k):
         buf["logits"] = lg
         buf["logits_n"] = int(lg.shape[0])
     mark_dirty()
+    global _PREFILL_PENDING
+    if rows >= prefill_min_rows() > 0:
+        _PREFILL_PENDING = True
 
 
 # ------------------------------------------------------------------ pool
@@ -624,6 +660,7 @@ def maybe_shrink_after_process(model):
             "calls": 0, "strong": 0, "staged": 0, "evicted": 0,
             "h2d_bytes": 0, "demoted": 0, "promoted": 0, "stage_fail": 0,
         }
+        warm_n = warm_start_from_prior()
         gc.collect()
         torch.cuda.empty_cache()
         free = torch.cuda.mem_get_info()[1] / 1e9
@@ -639,6 +676,42 @@ def maybe_shrink_after_process(model):
 
 
 # ------------------------------------------------------------------ staging
+
+
+def warm_start_from_prior():
+    """v3 prior seeding: at shrink time, H2D the offline-census top cold gids of
+    each layer directly into the empty flowing slots, so decode starts against
+    warm rows instead of a cold LRU the first ~16 forwards must fill online.
+    Idempotent per gid (gid in gid_row => skip). No-op when SGLANG_COLD_PRIOR_JSON
+    is unset or stats not yet armed. Returns total rows seeded."""
+    if not _STATE["shrunk"] or not _STATE["dynamic"]:
+        return 0
+    pm = _prior_mask()
+    if pm is None or not pm:
+        return 0
+    seeded = 0
+    for layer_id, pool in _STATE["layers"].items():
+        gids = pm.get(int(layer_id))
+        if not gids:
+            continue
+        for gid in gids[: pool.slots]:
+            if gid in pool.gid_row or gid not in pool.cold:
+                continue
+            if gid not in pool.host:   # cold row not snapshotted this layer
+                continue
+            row = _pick_row(pool)
+            if row is None:
+                break
+            if _row_from_host(pool, gid, row):
+                seeded += 1
+            else:
+                _return_row(pool, row)
+                break   # a failing H2D means the host pool itself is broken
+    st = _STATE["stats"] or {}
+    st["warm_seeded"] = seeded
+    if seeded:
+        logger.info("[COLD-POOL] prior warm-start: %d rows seeded into slots", seeded)
+    return seeded
 
 
 def _row_from_host(pool, gid, row):
@@ -671,6 +744,26 @@ def _evict_row(pool, row):
         pool.gid_row.pop(old, None)
         _mask(pool.layer_id, old)
         _STATE["stats"]["evicted"] += 1
+
+
+def _refresh_hits(pool, flat_ids):
+    """v4: hit-time LRU. Every staged gid that was ACTUALLY SELECTED this tick
+    bumps its row's tick so _pick_row evicts stale rows, not just old arrivals.
+    Without this, row_tick only records insertion time: a row in constant use
+    still ages out and gets evicted (FIFO drift). Keep gids have no row entry
+    and are skipped; -1 padding never reaches here (filtered by ids >= 0).
+    Pure CPU dict writes over the unique() result of a <=rows*k int tensor.
+    NOTE1: stash subsampling (stride over the _STASH_ROWS=819 budget) drops
+    rows from the tick's view — a gid only present in dropped rows misses
+    its refresh that tick. Harmless at tick granularity: next surviving
+    sample re-bumps it before any realistic eviction window.
+    NOTE2: pool.tick is written by BOTH _row_from_host (stage time) and this
+    refresh; a row staged and hit in the same pass records the same value.
+    Do not assume _refresh_hits is the sole tick writer for fresh rows."""
+    for gid in flat_ids.reshape(-1).unique().tolist():
+        row = pool.gid_row.get(gid)
+        if row is not None:
+            pool.row_tick[row] = pool.tick
 
 
 def _pick_row(pool):
@@ -735,18 +828,25 @@ def _phase_b(pool, flat):
 
 
 def after_forward_hook():
-    """model_runner.forward tail — OUTSIDE graph replay. One-step lookahead staging."""
+    """model_runner.forward tail — OUTSIDE graph replay. One-step lookahead staging.
+    v3: a prefill-sized stash (_PREFILL_PENDING) bypasses the %8 cadence so cold
+    experts demanded by the prompt are staged before/at decode start instead of
+    ~16 forwards late."""
+    global _PREFILL_PENDING
     if not _STATE["dynamic"]:
         return
     if torch.cuda.is_current_stream_capturing():
         return
     st = _STATE["stats"]
     st["calls"] += 1
-    if st["calls"] % 8 != 0 or not consume_dirty():
+    was_prefill = _PREFILL_PENDING
+    if was_prefill:
+        _PREFILL_PENDING = False
+    if (not was_prefill and st["calls"] % 8 != 0) or not consume_dirty():
         return
     alpha = strong_alpha()
     need = float(need_hits())
-    cap = max_stage_per_tick()
+    cap = max_stage_prefill() if was_prefill else max_stage_per_tick()
     k = 10
     try:
         k = _env_int("SGLANG_COLD_TOPK", 10) or 10
@@ -770,6 +870,7 @@ def after_forward_hook():
         sc = buf["scores"][:n].clone().reshape(-1, k)
         ids.fill_(-1)
         buf["scores"].fill_(-1.0)
+        _refresh_hits(pool, flat)
         is_cold = pool.cold_mask_gpu[flat]
         hot_min = torch.where(~is_cold, sc, torch.full_like(sc, float("inf"))).amin(dim=-1, keepdim=True)
         strong = is_cold & (sc >= alpha * hot_min)
