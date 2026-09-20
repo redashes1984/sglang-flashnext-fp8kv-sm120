@@ -52,6 +52,11 @@ Environment=SGLANG_EXPERT_COLD_POOL_SLOTS=64
 Environment=SGLANG_COLD_DEBUG=1
 ```
 - 实测收益：KV 池顶满 YAML cap `#tokens: 1,572,864`（fp8_e4m3，K/V 各约 9 GB）；host pinned 24.15 GB，dynamic=True。
++ **v3 — prefill 快路径：** stash 行数 >= `SGLANG_COLD_PREFILL_MIN_ROWS`（默认 512；<=0 关闭）视为 prefill 来源，hook 当次立即越过 `%8` cadence 召回，上限换成 `SGLANG_COLD_MAX_STAGE_PREFILL`（默认 16）。prompt 的需求就是紧随其后 decode 的真实预报信号。
++ **v3 — prior 预热（可选）：** `SGLANG_COLD_PRIOR_JSON` 指向离线 census 排名文件（每层冷 gid 排序表），shrink 结束时把头部条目直接 H2D 灌进空槽，首个请求不再冷启动。幂等；池外 gid 自动跳过。
++ **v4 — hit-time LRU：** `_refresh_hits` 对本 tick 实际被选中的 staged gid 刷新 `row_tick`，驱逐从"最老入场"（FIFO）变成真正的"最久未使用"。热但老的行不再排在陈旧行之前被淘汰。囤槽有界：需求衰减的 gid 掉出 stash 后，下个溢出周期自然老化。
++ **现役调参：** unit 内 `Environment=SGLANG_COLD_NEED_HITS=1`、`Environment=SGLANG_COLD_MAX_STAGE=8` —— 确认窗口减半、单 tick 召回翻倍。修复的根因：长回复尾部低频专有名词被 keep 次优专家顶替，因正确冷专家要 ~16 个 forward 后才到位；v3+v4 把窗口压到 ≤8 并用 prior 提前烘池。
++ 2026-09-21 验证（CT110 于 01:39 重启）：CPU 测试 T1-T11 + V1-V9 全绿，两轮外部审计 95/96 PASS（must_fix 零条）。启动日志 `checksum selfcheck: 33792 rows OK`；staged−evicted 恒差 3072（=48×64）在新 cadence 下依旧成立；尾部 token 探针（Ampere / Ada Lovelace）在截断边界处拼写正确。
 - **k 对齐规则：** hook 默认 `k` 必须等于模型的 `num_experts_per_tok`（本机 =10）；移植到其他模型时显式设 `SGLANG_COLD_TOPK`。不匹配会静默错位 `hot_min` 行分组——decode 质量退化且不报错。
 - **keep/slots 不要为显存降档：** 纯静态 keep-mask（keep-only、极小 slots）会压平路由分布，长思考链漂进 "hmm hmm" 复读填充。keep330 + slots64 刚好恢复多样性，这是下限档。
 
